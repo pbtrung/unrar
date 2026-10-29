@@ -61,6 +61,90 @@ size_t Archive::SearchBlock(HEADER_TYPE HeaderType)
 }
 
 
+// In "Keep broken files" mode we try to skip damaged areas of RAR 5.0
+// archives and continue from the next intact header. It is not possible
+// for encrypted headers, which cannot be recognized in a data stream.
+bool Archive::CanSalvage()
+{
+  return Cmd!=NULL && Cmd->KeepBroken && Format==RARFMT50 && !Encrypted &&
+         IsSeekable();
+}
+
+
+// Search for RAR 5.0 file, service or end of archive header with valid
+// CRC32 starting from StartPos. Return its position or -1 if not found.
+int64 Archive::SalvageScan50(int64 StartPos)
+{
+  const size_t MaxHeadSize=0x10000; // Do not recognize larger headers.
+  const size_t ChunkSize=0x400000;
+  std::vector<byte> Buf(ChunkSize+MaxHeadSize);
+  for (int64 BufPos=StartPos;;BufPos+=ChunkSize)
+  {
+    Wait();
+    // Bypass QOpen, we need the real file data here.
+    File::Seek(BufPos,SEEK_SET);
+    int ReadSize=File::Read(Buf.data(),Buf.size());
+    if (ReadSize<=0)
+      return -1;
+    size_t DataSize=(size_t)ReadSize;
+    bool LastChunk=DataSize<Buf.size();
+    // Overlapping MaxHeadSize tail is scanned as part of next chunk.
+    size_t ScanSize=LastChunk ? DataSize:ChunkSize;
+    for (size_t I=0;I<ScanSize && DataSize-I>=SIZEOF_SHORTBLOCKHEAD5;I++)
+    {
+      const byte *D=&Buf[I];
+
+      // Header size is a variable length integer up to 3 bytes.
+      uint64 BlockSize=0;
+      uint SizeBytes=0;
+      for (uint J=0;J<3;J++)
+      {
+        BlockSize|=uint64(D[4+J] & 0x7f)<<(J*7);
+        if ((D[4+J] & 0x80)==0)
+        {
+          SizeBytes=J+1;
+          break;
+        }
+      }
+      if (SizeBytes==0 || BlockSize<2)
+        continue;
+      size_t HeadSize=4+SizeBytes+(size_t)BlockSize;
+      if (HeadSize>MaxHeadSize || HeadSize>DataSize-I)
+        continue;
+
+      byte Type=D[4+SizeBytes];
+      if (Type!=HEAD_FILE && Type!=HEAD_SERVICE && Type!=HEAD_ENDARC)
+        continue;
+
+      if ((CRC32(0xffffffff,D+4,HeadSize-4)^0xffffffff)==RawGet4(D))
+        return BufPos+I;
+    }
+    if (LastChunk)
+      return -1;
+  }
+}
+
+
+// Called after failing to read a header. Find and read the next intact
+// header in the rest of current volume.
+size_t Archive::SalvageReadHeader()
+{
+  if (!CanSalvage())
+    return 0;
+  for (int64 Pos=CurBlockPos;(Pos=SalvageScan50(Pos+1))>=0;)
+  {
+    Seek(Pos,SEEK_SET);
+    size_t Size=ReadHeader();
+    if (Size>0)
+    {
+      mprintf(L"\nResuming after damaged data at offset %lld in %s",(long long)Pos,FileName.c_str());
+      return Size;
+    }
+  }
+  return 0;
+}
+
+
 size_t Archive::SearchSubBlock(const wchar *Type)
 {
   size_t Size,Count=0;
@@ -699,6 +783,11 @@ size_t Archive::ReadHeader50()
       FailedHeaderDecryption=true;
       return 0;
     }
+
+    // Sizes in damaged header might be wrong and skip intact data.
+    // Let the caller search for the next intact header instead.
+    if (CanSalvage())
+      return 0;
   }
 
   uint64 ExtraSize=0;

@@ -24,6 +24,7 @@ Archive::Archive(CommandData *InitCmd)
   Protected=false;
   Encrypted=false;
   FailedHeaderDecryption=false;
+  SalvageResync=false;
   BrokenHeader=false;
   LastReadBlock=0;
   CurHeaderType=HEAD_UNKNOWN;

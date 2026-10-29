@@ -66,6 +66,9 @@ class Archive:public File
     size_t SearchBlock(HEADER_TYPE HeaderType);
     size_t SearchSubBlock(const wchar *Type);
     size_t SearchRR();
+    bool CanSalvage();
+    int64 SalvageScan50(int64 StartPos);
+    size_t SalvageReadHeader();
     int GetRecoveryPercent() {return RecoveryPercent;}
     size_t ReadHeader();
     void CheckArc(bool EnableBroken);
@@ -130,6 +133,11 @@ class Archive:public File
     size_t SFXSize;
     bool BrokenHeader;
     bool FailedHeaderDecryption;
+
+    // Set by MergeArchive in -kb mode if it skipped a missing or damaged
+    // volume while reading split file data, so the archive is already
+    // positioned in a later volume and extraction can continue.
+    bool SalvageResync;
 
 #if !defined(RAR_NOCRYPT)
     byte ArcSalt[SIZE_SALT50];

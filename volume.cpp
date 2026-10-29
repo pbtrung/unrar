@@ -27,6 +27,11 @@ bool MergeArchive(Archive &Arc,ComprDataIO *DataIO,bool ShowFileName,wchar Comma
 
   bool PrevVolEncrypted=Arc.Encrypted;
 
+  // Must be checked before closing, when the archive is still seekable.
+  bool Salvage=Arc.CanSalvage();
+  RARFORMAT PrevFormat=Arc.Format;
+  bool PrevVolume=Arc.Volume;
+
   int64 PosBeforeClose=Arc.Tell();
 
   if (DataIO!=NULL)
@@ -126,6 +131,30 @@ bool MergeArchive(Archive &Arc,ComprDataIO *DataIO,bool ShowFileName,wchar Comma
 #endif // RARDLL
     }
   
+  // Set if we skipped a missing or damaged volume in -kb mode.
+  bool VolumeGap=false;
+
+  if (FailedOpen && Salvage)
+  {
+    // Skip missing volumes and continue from the next available one.
+    std::wstring MissingName=NextName;
+    const uint MaxSkip=16;
+    for (uint I=0;I<MaxSkip && FailedOpen;I++)
+    {
+      NextVolumeName(NextName,!Arc.NewNumbering);
+      if (Arc.Open(NextName,OpenMode))
+        FailedOpen=false;
+    }
+    if (FailedOpen)
+      NextName=MissingName;
+    else
+    {
+      ErrHandler.SetErrorCode(RARX_OPEN);
+      uiMsg(UIERROR_MISSINGVOL,MissingName);
+      VolumeGap=true;
+    }
+  }
+
   if (FailedOpen)
   {
     ErrHandler.SetErrorCode(RARX_OPEN);
@@ -139,7 +168,29 @@ bool MergeArchive(Archive &Arc,ComprDataIO *DataIO,bool ShowFileName,wchar Comma
     mprintf(St(Command=='T' ? MTestVol:MExtrVol),Arc.FileName.c_str());
 
 
-  Arc.CheckArc(true);
+  if (!Arc.IsArchive(true))
+  {
+    // If FailedHeaderDecryption is set, we already reported that archive
+    // password is incorrect.
+    if (!Arc.FailedHeaderDecryption)
+      uiMsg(UIERROR_BADARCHIVE,Arc.FileName);
+    if (!Salvage || Arc.FailedHeaderDecryption)
+      ErrHandler.Exit(RARX_BADARC);
+
+    // Volume start is damaged. Treat it as continuation of previous volume
+    // and look for the first intact header in it.
+    ErrHandler.SetErrorCode(RARX_BADARC);
+    Arc.Format=PrevFormat;
+    Arc.Volume=PrevVolume;
+    Arc.Encrypted=false;
+    int64 Pos=Arc.SalvageScan50(0);
+    if (Pos<0)
+      Pos=Arc.FileLength();
+    else
+      mprintf(L"\nResuming after damaged data at offset %lld in %s",(long long)Pos,Arc.FileName.c_str());
+    Arc.Seek(Pos,SEEK_SET);
+    VolumeGap=true;
+  }
 #ifdef RARDLL
   if (!DllVolNotify(Cmd,NextName))
     return false;
@@ -153,6 +204,20 @@ bool MergeArchive(Archive &Arc,ComprDataIO *DataIO,bool ShowFileName,wchar Comma
     // unexpected files by third party to encrypted extraction.
     uiMsg(UIERROR_BADARCHIVE,Arc.FileName);
     ErrHandler.Exit(RARX_BADARC);
+  }
+
+  if (VolumeGap)
+  {
+    Arc.CurBlockPos=Arc.NextBlockPos=Arc.Tell();
+    // Data of file continued in skipped volume are lost. Do not append data
+    // of another file from this volume. Let the caller finish the current
+    // file and continue from the current position instead.
+    if (DataIO!=NULL && SplitHeader)
+    {
+      Arc.SalvageResync=true;
+      return false;
+    }
+    SplitHeader=false;
   }
 
   if (SplitHeader)

@@ -394,8 +394,14 @@ void CmdExtract::DeleteArchive(Archive &Arc,const std::wstring &ArcName)
 bool CmdExtract::ExtractCurrentFile(Archive &Arc,size_t HeaderSize,bool &Repeat)
 {
   wchar Command=Cmd->Command[0];
+
+  // In -kb mode try to skip a damaged area and continue from the next
+  // intact header, so files following the damage can be extracted too.
   if (HeaderSize==0)
-    if (DataIO.UnpVolume)
+    HeaderSize=Arc.SalvageReadHeader();
+
+  if (HeaderSize==0)
+    if (DataIO.UnpVolume || Arc.Volume && Arc.CanSalvage())
     {
 #ifdef NOVOLUME
       return false;
@@ -538,6 +544,7 @@ bool CmdExtract::ExtractCurrentFile(Archive &Arc,size_t HeaderSize,bool &Repeat)
 
   DataIO.UnpVolume=Arc.FileHead.SplitAfter;
   DataIO.NextVolumeMissing=false;
+  Arc.SalvageResync=false;
 
   Arc.Seek(Arc.NextBlockPos-Arc.FileHead.PackSize,SEEK_SET);
 
@@ -1131,7 +1138,10 @@ bool CmdExtract::ExtractCurrentFile(Archive &Arc,size_t HeaderSize,bool &Repeat)
   if (MatchFound)
     MatchedArgs++;
   if (DataIO.NextVolumeMissing)
-    return false;
+    if (Arc.SalvageResync)
+      Arc.SalvageResync=false; // Already positioned in a later volume.
+    else
+      return false;
   if (!ExtrFile)
     if (!Arc.Solid)
       Arc.SeekToNext();
