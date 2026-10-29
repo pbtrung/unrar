@@ -1,0 +1,15 @@
+# makefile build products
+*.o
+/unrar
+/default.sfx
+/libunrar.so
+/libunrar.a
+
+# Editor backups (also removed by `make clean`)
+*.bak
+*~
+
+# Visual Studio build output (UnRAR.vcxproj / UnRARDll.vcxproj)
+/build/
+.vs/
+*.vcxproj.user
